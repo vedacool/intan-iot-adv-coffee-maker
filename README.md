@@ -13,6 +13,16 @@ A C# console app that pretends to be a coffee maker. It will:
 
 All of this is defined by the device's **capability model** (`CoffeeMaker.json`), a DTDL file that both IoT Central and the C# code agree on.
 
+## Scope
+
+This project is built and tested specifically for **Azure IoT Central + Azure CLI / Cloud Shell**, and that's the only combination it's confirmed to work on. A few things worth being upfront about:
+
+- **Verified**: the C# code's logic (provisioning flow, telemetry loop, command handlers, property updates) has been checked for correctness, and the `.csproj` has been fixed to run on Azure Cloud Shell's current .NET runtime. Running it end-to-end against a real Azure IoT Central app and device is on you to confirm, since that requires live Azure credentials this project doesn't have access to.
+- **Untested, not necessarily broken**: running this outside Cloud Shell (e.g. on your own Windows/Mac/Linux machine with .NET installed locally), or against a different IoT platform (plain Azure IoT Hub without Central, AWS IoT, Google Cloud IoT, a generic MQTT broker, etc.). It might work as-is, or it might not — the Device Provisioning Service (DPS) flow in `Program.cs` is written specifically against Azure's DPS and IoT Central, so it would need real changes, not just configuration, to point anywhere else.
+- **Not intended for**: controlling an actual physical coffee machine. `CoffeeMaker.cs` simulates all its telemetry with random numbers — there's no hardware integration here, only a device *model* that mimics one for learning purposes.
+
+If you do end up running it somewhere else and it works (or doesn't), it's worth updating this section so the scope reflects reality rather than a guess.
+
 ## Repository contents
 
 | File | Purpose |
