@@ -97,6 +97,7 @@ namespace Learn.CoffeeMaker
             // doing the actual (awaited) network send - never hold a lock across an await.
             string cupState, brewingState;
             double temperature, humidity;
+            bool maintenanceState;
             lock (_stateLock)
             {
                 UpdateCupState();
@@ -107,6 +108,7 @@ namespace Learn.CoffeeMaker
                 cupState = _cupState;
                 brewingState = _brewingState;
                 temperature = _currentTemperature;
+                maintenanceState = _maintenanceState;
             }
 
             // Create JSON message
@@ -129,7 +131,7 @@ namespace Learn.CoffeeMaker
             double infoHumidity = Math.Round(humidity, 1);
             string infoCup = cupState == "detected" ? "Y" : "N";
             string infoBrewing = brewingState == "brewing" ? "Y" : "N";
-            string infoMaintenance = _maintenanceState ? "Y" : "N";
+            string infoMaintenance = maintenanceState ? "Y" : "N";
 
             Console.WriteLine($"Telemetry send: Temperature: {infoTemperature}ºC Humidity: {infoHumidity}% " +
                 $"Cup Detected: {infoCup} Brewing: {infoBrewing} Maintenance Mode: {infoMaintenance}");
