@@ -101,6 +101,27 @@ namespace Learn.CoffeeMaker
             };
 
             deviceClient = DeviceClient.Create(dpsRegistrationResult.AssignedHub, authMethod, TransportType.Mqtt, options);
+
+            // The SDK retries transient connection failures indefinitely and silently by
+            // default - without this handler, a network blip mid-run looks exactly like a
+            // frozen app (no error, no output, nothing). This surfaces what's actually
+            // happening so a stall is diagnosable instead of a mystery.
+            deviceClient.SetConnectionStatusChangesHandler((status, reason) =>
+            {
+                Console.WriteLine($" ** Connection status changed: {status} (reason: {reason})");
+            });
+
+            // Bound the retries instead of the SDK's default of retrying transient faults
+            // forever. This gives up after a predictable window (roughly a couple of
+            // minutes with this backoff) and throws, so a genuinely broken connection
+            // surfaces as an error instead of hanging indefinitely - a real network blip
+            // that recovers quickly will still succeed well within this window.
+            deviceClient.SetRetryPolicy(new ExponentialBackoffTransportRetryPolicy(
+                retryCount: 5,
+                minBackoff: TimeSpan.FromSeconds(1),
+                maxBackoff: TimeSpan.FromSeconds(30),
+                deltaBackoff: TimeSpan.FromSeconds(2)));
+
             return deviceClient;
         }
         //</Provisioning>
