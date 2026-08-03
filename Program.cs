@@ -100,7 +100,13 @@ namespace Learn.CoffeeMaker
                 ModelId = ModelId,
             };
 
-            deviceClient = DeviceClient.Create(dpsRegistrationResult.AssignedHub, authMethod, TransportType.Mqtt, options);
+            // Mqtt_WebSocket_Only forces MQTT over port 443 (looks like ordinary HTTPS)
+            // instead of raw MQTT on port 8883. Plain TransportType.Mqtt connects fine
+            // initially but many firewalls/proxies reset the raw TCP connection shortly
+            // after, causing constant Disconnected_Retrying/Connected cycling even though
+            // it keeps recovering. WebSocket-wrapped traffic passes through those far more
+            // reliably.
+            deviceClient = DeviceClient.Create(dpsRegistrationResult.AssignedHub, authMethod, TransportType.Mqtt_WebSocket_Only, options);
 
             // The SDK retries transient connection failures indefinitely and silently by
             // default - without this handler, a network blip mid-run looks exactly like a
