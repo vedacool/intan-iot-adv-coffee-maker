@@ -1,4 +1,4 @@
-﻿using Microsoft.Azure.Devices.Client;
+using Microsoft.Azure.Devices.Client;
 using Microsoft.Azure.Devices.Shared;
 using Newtonsoft.Json;
 using System;
@@ -16,6 +16,7 @@ namespace Learn.CoffeeMaker
         BadRequest = 400,
         NotFound = 404
     }
+
     public class CoffeeMaker
     {
         private readonly Random _random = new();
@@ -24,13 +25,21 @@ namespace Learn.CoffeeMaker
 
         private readonly bool _warrantyState;
 
+        // Brew cycle length, in telemetry ticks (~1 tick = 1 second).
+        private const int BrewDurationSeconds = 28;
+
         //Variables default values
         private double _optimalTemperature = 96d;
+        private double _currentTemperature = 96d;
         private string _cupState = "detected";
         private string _brewingState = "notbrewing";
-        private int _cupTimer = 20;
         private int _brewingTimer = 0;
         private bool _maintenanceState = false;
+
+        // Cup lifecycle: instead of a coin-flip every tick, the cup stays present or
+        // absent for a realistic stretch of time, and never changes mid-brew - you
+        // can't swap cups while the machine is actively pouring.
+        private int _cupStateTimer;
 
         public CoffeeMaker(DeviceClient deviceClient)
         {
@@ -38,13 +47,16 @@ namespace Learn.CoffeeMaker
 
             //When device starts it randomly sets the warranty state to either true or false.
             _warrantyState = _random.NextDouble() > 0.5 ? true : false;
+
+            // Start with a cup present for a little while before the first random change.
+            _cupStateTimer = NextCupPresentDuration();
         }
 
         //<Workflow>
         public async Task PerformOperationsAsync(CancellationToken cancellationToken)
         {
             Console.WriteLine($"Device successfully connected to Azure IoT Central");
-            
+
             Console.WriteLine($"- Set handler for \"SetMaintenanceMode\" command.");
             await _deviceClient.SetMethodHandlerAsync("SetMaintenanceMode", HandleMaintenanceModeCommand, _deviceClient, cancellationToken);
 
@@ -69,40 +81,17 @@ namespace Learn.CoffeeMaker
         //Send temperature and humidity telemetry, whether it's currently brewing and when a cup is detected.
         private async Task SendTelemetryAsync(CancellationToken cancellationToken)
         {
-            //Simulate the telemetry values
-            double temperature = _optimalTemperature + (_random.NextDouble() * 4) - 2;
-            double humidity = 20 + (_random.NextDouble() * 80);
-
-            // Cup timer - every 20 seconds randomly decide if the cup is present or not
-            if (_cupTimer > 0)
-            {
-                _cupTimer--;
-
-                if(_cupTimer == 0)
-                {
-                    _cupState = _random.NextDouble()  > 0.5 ? "detected" : "notdetected";
-                    _cupTimer = 20;
-                }
-            }
-
-            // Brewing timer
-            if (_brewingTimer > 0)
-            {
-                _brewingTimer--;
-
-                //Finished brewing
-                if (_brewingTimer == 0)
-                {
-                    _brewingState = "notbrewing";
-                }
-            }
+            UpdateCupState();
+            UpdateTemperature();
+            double humidity = UpdateHumidity();
+            UpdateBrewingState();
 
             // Create JSON message
             string messageBody = JsonConvert.SerializeObject(
                 new
                 {
-                    WaterTemperature = temperature,
-                    AirHumidity = humidity,
+                    WaterTemperature = Math.Round(_currentTemperature, 1),
+                    AirHumidity = Math.Round(humidity, 1),
                     CupDetected = _cupState,
                     Brewing = _brewingState
                 });
@@ -113,7 +102,7 @@ namespace Learn.CoffeeMaker
             };
 
             //Show the information in console
-            double infoTemperature = Math.Round(temperature, 1);
+            double infoTemperature = Math.Round(_currentTemperature, 1);
             double infoHumidity = Math.Round(humidity, 1);
             string infoCup = _cupState == "detected" ? "Y" : "N";
             string infoBrewing = _brewingState == "brewing" ? "Y" : "N";
@@ -125,26 +114,112 @@ namespace Learn.CoffeeMaker
             //Send the message
             await _deviceClient.SendEventAsync(message, cancellationToken);
         }
+
+        // The cup can only change state between brews - once a brew starts, the cup
+        // stays "detected" until the cycle finishes, then it lingers a while (someone
+        // has to walk over and pick it up) before the machine is empty-handed again.
+        private void UpdateCupState()
+        {
+            if (_brewingState == "brewing")
+            {
+                return;
+            }
+
+            if (_cupStateTimer > 0)
+            {
+                _cupStateTimer--;
+                return;
+            }
+
+            _cupState = _cupState == "detected" ? "notdetected" : "detected";
+            _cupStateTimer = _cupState == "detected" ? NextCupPresentDuration() : NextCupAbsentDuration();
+        }
+
+        private int NextCupPresentDuration() => 30 + _random.Next(0, 30); // 30-59s with a cup in place
+        private int NextCupAbsentDuration() => 5 + _random.Next(0, 10);   // 5-14s before someone puts a new cup down
+
+        // Idle: temperature drifts gently around the optimal set point (thermostat noise).
+        // Brewing: the heating element kicks in, so temperature ramps up toward a small
+        // overshoot above optimal for the first half of the brew, then eases back down
+        // toward optimal as the cycle finishes - much closer to how a real machine behaves
+        // than uniform random noise regardless of what the machine is doing.
+        private void UpdateTemperature()
+        {
+            if (_brewingState == "brewing")
+            {
+                double brewProgress = 1d - (_brewingTimer / (double)BrewDurationSeconds); // 0 -> 1 across the brew
+                double target = brewProgress < 0.5
+                    ? _optimalTemperature + (brewProgress * 2 * 3d)   // ramp up to +3°C overshoot
+                    : _optimalTemperature + ((1d - brewProgress) * 2 * 3d); // ease back down
+
+                _currentTemperature += (target - _currentTemperature) * 0.3d; // smooth toward target
+            }
+            else
+            {
+                double idleTarget = _optimalTemperature + (_random.NextDouble() * 1d) - 0.5d;
+                _currentTemperature += (idleTarget - _currentTemperature) * 0.2d;
+            }
+        }
+
+        // Humidity ticks up while steam is being generated during a brew, and settles
+        // back down to a normal room-air baseline once the machine goes idle.
+        private double UpdateHumidity()
+        {
+            double baseline = 30 + (_random.NextDouble() * 10); // 30-40% ambient
+            return _brewingState == "brewing"
+                ? baseline + 25 + (_random.NextDouble() * 15) // steam pushes humidity up
+                : baseline;
+        }
+
+        private void UpdateBrewingState()
+        {
+            if (_brewingTimer <= 0)
+            {
+                return;
+            }
+
+            _brewingTimer--;
+
+            if (_brewingTimer == 0)
+            {
+                _brewingState = "notbrewing";
+                Console.WriteLine(" * Brewing finished - your coffee is ready.");
+            }
+        }
         //</Telemetry>
 
         //<Commands>
-        // The callback to handle "SetMaintenanceMode" command.
+        // The callback to handle "SetMaintenanceMode" command. Toggles maintenance mode
+        // on/off (the original sample could only ever turn it on, with no way back).
+        // Entering maintenance mode mid-brew stops the brew immediately, as a real
+        // machine would if serviced while running.
         private Task<MethodResponse> HandleMaintenanceModeCommand(MethodRequest request, object userContext)
         {
             try
             {
-                Console.WriteLine(" * Maintenance command received");
+                Console.WriteLine(" * Maintenance mode command received");
 
+                _maintenanceState = !_maintenanceState;
+
+                string message;
                 if (_maintenanceState)
                 {
-                    Console.WriteLine(" - Warning: The device is already in the maintenance mode.");
+                    if (_brewingState == "brewing")
+                    {
+                        _brewingState = "notbrewing";
+                        _brewingTimer = 0;
+                        Console.WriteLine(" - Brewing stopped: entering maintenance mode.");
+                    }
+                    message = "Maintenance mode enabled.";
+                }
+                else
+                {
+                    message = "Maintenance mode disabled.";
                 }
 
-                //Set state
-                _maintenanceState = true;
+                Console.WriteLine($" - {message}");
 
-                //Send response
-                byte[] responsePayload = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject("Success"));
+                byte[] responsePayload = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(message));
                 return Task.FromResult(new MethodResponse(responsePayload, (int)StatusCode.Completed));
             }
             catch (Exception ex)
@@ -152,40 +227,44 @@ namespace Learn.CoffeeMaker
                 Console.WriteLine($"Exception while handling \"SetMaintenanceMode\" command: {ex}");
                 return Task.FromResult(new MethodResponse((int)StatusCode.BadRequest));
             }
-
         }
 
-        // The callback to handle "StartBrewing" command.
+        // The callback to handle "StartBrewing" command. Unlike the original sample,
+        // this now actually reports back whether brewing started or why it didn't -
+        // instead of always answering "Success" even when nothing happened.
         private Task<MethodResponse> HandleStartBrewingCommand(MethodRequest request, object userContext)
         {
             try
             {
                 Console.WriteLine(" * Start brewing command received");
 
-                if (_brewingState == "brewing")
-                {
-                    Console.WriteLine(" - Warning: The device is already brewing.");
-                }
-
-                if (_cupState == "notdetected")
-                {
-                    Console.WriteLine(" - Warning: There is no cup detected.");
-                }
-
+                string failureReason = null;
                 if (_maintenanceState)
                 {
-                    Console.WriteLine(" - Warning: The device is in maintenance mode.");
+                    failureReason = "Cannot brew: device is in maintenance mode.";
                 }
-
-                //Set state - brew for 30 seconds
-                if (_cupState == "detected" && _brewingState == "notbrewing" && !_maintenanceState)
+                else if (_brewingState == "brewing")
                 {
-                    _brewingState = "brewing";
-                    _brewingTimer = 30;
+                    failureReason = "Cannot brew: the device is already brewing.";
+                }
+                else if (_cupState == "notdetected")
+                {
+                    failureReason = "Cannot brew: no cup detected.";
                 }
 
-                //Send response
-                byte[] responsePayload = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject("Success"));
+                if (failureReason != null)
+                {
+                    Console.WriteLine($" - Warning: {failureReason}");
+                    byte[] failurePayload = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(failureReason));
+                    return Task.FromResult(new MethodResponse(failurePayload, (int)StatusCode.BadRequest));
+                }
+
+                //Start brewing
+                _brewingState = "brewing";
+                _brewingTimer = BrewDurationSeconds;
+                Console.WriteLine($" - Brewing started ({BrewDurationSeconds}s cycle).");
+
+                byte[] responsePayload = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject("Brewing started."));
                 return Task.FromResult(new MethodResponse(responsePayload, (int)StatusCode.Completed));
             }
             catch (Exception ex)
