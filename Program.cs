@@ -111,12 +111,12 @@ namespace Learn.CoffeeMaker
                 Console.WriteLine($" ** Connection status changed: {status} (reason: {reason})");
             });
 
-            // Bound the retries instead of the SDK's default of retrying transient faults
-            // forever. This gives up after a predictable window (roughly a couple of
-            // minutes with this backoff) and throws, so a genuinely broken connection
-            // surfaces as an error instead of hanging indefinitely - a real network blip
-            // that recovers quickly will still succeed well within this window.
-            deviceClient.SetRetryPolicy(new ExponentialBackoffTransportRetryPolicy(
+            // Bound the retries instead of the SDK's default (int.MaxValue - effectively
+            // forever) for transient faults. This gives up after a predictable window
+            // (roughly a couple of minutes with this backoff) and throws, so a genuinely
+            // broken connection surfaces as an error instead of hanging indefinitely - a
+            // real network blip that recovers quickly will still succeed well within this window.
+            deviceClient.SetRetryPolicy(new ExponentialBackoff(
                 retryCount: 5,
                 minBackoff: TimeSpan.FromSeconds(1),
                 maxBackoff: TimeSpan.FromSeconds(30),
