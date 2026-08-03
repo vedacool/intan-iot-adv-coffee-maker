@@ -120,21 +120,43 @@ namespace Learn.CoffeeMaker
             // often is normal, the SDK's automatic retry handles it, and no telemetry is lost
             // (it just resends once reconnected) - only "Disconnected" with no further retry
             // is something actually worth stopping and investigating.
+            // Throttled: a flaky network can cycle Disconnected_Retrying -> Connected every
+            // few seconds, which would otherwise print a "network blip" line constantly and
+            // bury everything else in the console. Instead, only the first blip in a given
+            // disconnected episode is printed; further retry attempts before it reconnects
+            // are counted silently, and the eventual "Connected" line reports the total.
             bool hasConnectedBefore = false;
+            bool blipAlreadyReportedThisEpisode = false;
+            int blipCountThisEpisode = 0;
             deviceClient.SetConnectionStatusChangesHandler((status, reason) =>
             {
                 switch (status)
                 {
                     case ConnectionStatus.Connected:
-                        Console.WriteLine(hasConnectedBefore
-                            ? " ** Reconnected to Azure IoT Central. Back to normal."
-                            : " ** Connected to Azure IoT Central.");
+                        if (hasConnectedBefore && blipCountThisEpisode > 0)
+                        {
+                            Console.WriteLine(blipCountThisEpisode == 1
+                                ? " ** Reconnected to Azure IoT Central. Back to normal."
+                                : $" ** Reconnected to Azure IoT Central after {blipCountThisEpisode} retries. Back to normal.");
+                        }
+                        else if (!hasConnectedBefore)
+                        {
+                            Console.WriteLine(" ** Connected to Azure IoT Central.");
+                        }
                         hasConnectedBefore = true;
+                        blipAlreadyReportedThisEpisode = false;
+                        blipCountThisEpisode = 0;
                         break;
 
                     case ConnectionStatus.Disconnected_Retrying:
-                        Console.WriteLine(" ** Network blip - connection dropped, reconnecting automatically." +
-                            " This is normal on some networks and no telemetry is lost.");
+                        blipCountThisEpisode++;
+                        if (!blipAlreadyReportedThisEpisode)
+                        {
+                            Console.WriteLine(" ** Network blip - connection dropped, reconnecting automatically." +
+                                " This is normal on some networks and no telemetry is lost." +
+                                " (Further retries are counted silently until it reconnects.)");
+                            blipAlreadyReportedThisEpisode = true;
+                        }
                         break;
 
                     case ConnectionStatus.Disconnected:
