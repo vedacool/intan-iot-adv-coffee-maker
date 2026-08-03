@@ -158,6 +158,9 @@ Re-open the device page in IoT Central (Step 6) — **Connect** always shows the
 **"Import model" option isn't showing up**
 Make sure you're inside a device template you just created (Step 2), not the top-level Device templates list. The import option lives inside a specific template, not as a global action.
 
+**"Network blip - connection dropped, reconnecting automatically" keeps appearing**
+This is expected, not an error — some networks (school Wi-Fi in particular) periodically drop and re-establish the underlying connection. The SDK automatically reconnects and no telemetry is lost; it just resends once back online. You'll also see a matching "Reconnected to Azure IoT Central. Back to normal." line once it recovers. If instead you see "Connection lost and the SDK has stopped retrying" — that one is a real problem: check your network connection and that `ID_SCOPE` / `DEVICE_ID` / `DEVICE_KEY` are still correct.
+
 ## Security note
 
 `DEVICE_KEY` is a live credential for your IoT Hub-provisioned device. Don't commit it to this repository or any public location. If a key is ever exposed, regenerate it from the device's **Connect** page in IoT Central.

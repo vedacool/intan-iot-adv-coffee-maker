@@ -112,9 +112,40 @@ namespace Learn.CoffeeMaker
             // default - without this handler, a network blip mid-run looks exactly like a
             // frozen app (no error, no output, nothing). This surfaces what's actually
             // happening so a stall is diagnosable instead of a mystery.
+            //
+            // The messages below are deliberately plain-language rather than raw SDK enum
+            // names. This project gets used in a classroom, and "Disconnected_Retrying" /
+            // "Communication_Error" reads like something is broken. In practice a home/school
+            // Wi-Fi network dropping and re-establishing the underlying connection every so
+            // often is normal, the SDK's automatic retry handles it, and no telemetry is lost
+            // (it just resends once reconnected) - only "Disconnected" with no further retry
+            // is something actually worth stopping and investigating.
+            bool hasConnectedBefore = false;
             deviceClient.SetConnectionStatusChangesHandler((status, reason) =>
             {
-                Console.WriteLine($" ** Connection status changed: {status} (reason: {reason})");
+                switch (status)
+                {
+                    case ConnectionStatus.Connected:
+                        Console.WriteLine(hasConnectedBefore
+                            ? " ** Reconnected to Azure IoT Central. Back to normal."
+                            : " ** Connected to Azure IoT Central.");
+                        hasConnectedBefore = true;
+                        break;
+
+                    case ConnectionStatus.Disconnected_Retrying:
+                        Console.WriteLine(" ** Network blip - connection dropped, reconnecting automatically." +
+                            " This is normal on some networks and no telemetry is lost.");
+                        break;
+
+                    case ConnectionStatus.Disconnected:
+                        Console.WriteLine(" ** Connection lost and the SDK has stopped retrying." +
+                            " This one IS a real problem - check your network and credentials.");
+                        break;
+
+                    default:
+                        Console.WriteLine($" ** Connection status changed: {status} (reason: {reason})");
+                        break;
+                }
             });
 
             // Bound the retries instead of the SDK's default (int.MaxValue - effectively
