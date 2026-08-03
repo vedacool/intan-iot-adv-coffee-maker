@@ -28,9 +28,18 @@ namespace Learn.CoffeeMaker
         // Brew cycle length, in telemetry ticks (~1 tick = 1 second).
         private const int BrewDurationSeconds = 28;
 
-        //Variables default values
-        private double _optimalTemperature = 96d;
-        private double _currentTemperature = 96d;
+        // Matches the OptimalTemperature bounds declared in CoffeeMaker.json.
+        private const double MinOptimalTemperature = 86d;
+        private const double MaxOptimalTemperature = 100d;
+
+        // All the mutable device state below is read/written both by the telemetry
+        // loop (SendTelemetryAsync, on a timer) and by command/property callbacks the
+        // Azure SDK invokes from its own thread - so every access goes through this lock.
+        private readonly object _stateLock = new();
+
+        //Variables default values - matches CoffeeMaker.json's declared initialValue (98).
+        private double _optimalTemperature = 98d;
+        private double _currentTemperature = 98d;
         private string _cupState = "detected";
         private string _brewingState = "notbrewing";
         private int _brewingTimer = 0;
@@ -69,6 +78,9 @@ namespace Learn.CoffeeMaker
             Console.WriteLine("- Update \"DeviceWarrantyExpired\" reported property on the initial startup.");
             await UpdateDeviceWarranty(cancellationToken);
 
+            Console.WriteLine("- Report initial \"OptimalTemperature\" reported property.");
+            await ReportOptimalTemperatureAsync(_optimalTemperature, cancellationToken);
+
             while (!cancellationToken.IsCancellationRequested)
             {
                 await SendTelemetryAsync(cancellationToken);
@@ -81,19 +93,30 @@ namespace Learn.CoffeeMaker
         //Send temperature and humidity telemetry, whether it's currently brewing and when a cup is detected.
         private async Task SendTelemetryAsync(CancellationToken cancellationToken)
         {
-            UpdateCupState();
-            UpdateTemperature();
-            double humidity = UpdateHumidity();
-            UpdateBrewingState();
+            // Compute the next tick's values under the lock, then release it before
+            // doing the actual (awaited) network send - never hold a lock across an await.
+            string cupState, brewingState;
+            double temperature, humidity;
+            lock (_stateLock)
+            {
+                UpdateCupState();
+                UpdateTemperature();
+                humidity = UpdateHumidity();
+                UpdateBrewingState();
+
+                cupState = _cupState;
+                brewingState = _brewingState;
+                temperature = _currentTemperature;
+            }
 
             // Create JSON message
             string messageBody = JsonConvert.SerializeObject(
                 new
                 {
-                    WaterTemperature = Math.Round(_currentTemperature, 1),
+                    WaterTemperature = Math.Round(temperature, 1),
                     AirHumidity = Math.Round(humidity, 1),
-                    CupDetected = _cupState,
-                    Brewing = _brewingState
+                    CupDetected = cupState,
+                    Brewing = brewingState
                 });
             using var message = new Message(Encoding.ASCII.GetBytes(messageBody))
             {
@@ -102,10 +125,10 @@ namespace Learn.CoffeeMaker
             };
 
             //Show the information in console
-            double infoTemperature = Math.Round(_currentTemperature, 1);
+            double infoTemperature = Math.Round(temperature, 1);
             double infoHumidity = Math.Round(humidity, 1);
-            string infoCup = _cupState == "detected" ? "Y" : "N";
-            string infoBrewing = _brewingState == "brewing" ? "Y" : "N";
+            string infoCup = cupState == "detected" ? "Y" : "N";
+            string infoBrewing = brewingState == "brewing" ? "Y" : "N";
             string infoMaintenance = _maintenanceState ? "Y" : "N";
 
             Console.WriteLine($"Telemetry send: Temperature: {infoTemperature}ºC Humidity: {infoHumidity}% " +
@@ -118,6 +141,7 @@ namespace Learn.CoffeeMaker
         // The cup can only change state between brews - once a brew starts, the cup
         // stays "detected" until the cycle finishes, then it lingers a while (someone
         // has to walk over and pick it up) before the machine is empty-handed again.
+        // Callers must hold _stateLock.
         private void UpdateCupState()
         {
             if (_brewingState == "brewing")
@@ -143,6 +167,7 @@ namespace Learn.CoffeeMaker
         // overshoot above optimal for the first half of the brew, then eases back down
         // toward optimal as the cycle finishes - much closer to how a real machine behaves
         // than uniform random noise regardless of what the machine is doing.
+        // Callers must hold _stateLock.
         private void UpdateTemperature()
         {
             if (_brewingState == "brewing")
@@ -163,6 +188,7 @@ namespace Learn.CoffeeMaker
 
         // Humidity ticks up while steam is being generated during a brew, and settles
         // back down to a normal room-air baseline once the machine goes idle.
+        // Callers must hold _stateLock.
         private double UpdateHumidity()
         {
             double baseline = 30 + (_random.NextDouble() * 10); // 30-40% ambient
@@ -171,6 +197,7 @@ namespace Learn.CoffeeMaker
                 : baseline;
         }
 
+        // Callers must hold _stateLock.
         private void UpdateBrewingState()
         {
             if (_brewingTimer <= 0)
@@ -199,22 +226,25 @@ namespace Learn.CoffeeMaker
             {
                 Console.WriteLine(" * Maintenance mode command received");
 
-                _maintenanceState = !_maintenanceState;
-
                 string message;
-                if (_maintenanceState)
+                lock (_stateLock)
                 {
-                    if (_brewingState == "brewing")
+                    _maintenanceState = !_maintenanceState;
+
+                    if (_maintenanceState)
                     {
-                        _brewingState = "notbrewing";
-                        _brewingTimer = 0;
-                        Console.WriteLine(" - Brewing stopped: entering maintenance mode.");
+                        if (_brewingState == "brewing")
+                        {
+                            _brewingState = "notbrewing";
+                            _brewingTimer = 0;
+                            Console.WriteLine(" - Brewing stopped: entering maintenance mode.");
+                        }
+                        message = "Maintenance mode enabled.";
                     }
-                    message = "Maintenance mode enabled.";
-                }
-                else
-                {
-                    message = "Maintenance mode disabled.";
+                    else
+                    {
+                        message = "Maintenance mode disabled.";
+                    }
                 }
 
                 Console.WriteLine($" - {message}");
@@ -239,17 +269,26 @@ namespace Learn.CoffeeMaker
                 Console.WriteLine(" * Start brewing command received");
 
                 string failureReason = null;
-                if (_maintenanceState)
+                lock (_stateLock)
                 {
-                    failureReason = "Cannot brew: device is in maintenance mode.";
-                }
-                else if (_brewingState == "brewing")
-                {
-                    failureReason = "Cannot brew: the device is already brewing.";
-                }
-                else if (_cupState == "notdetected")
-                {
-                    failureReason = "Cannot brew: no cup detected.";
+                    if (_maintenanceState)
+                    {
+                        failureReason = "Cannot brew: device is in maintenance mode.";
+                    }
+                    else if (_brewingState == "brewing")
+                    {
+                        failureReason = "Cannot brew: the device is already brewing.";
+                    }
+                    else if (_cupState == "notdetected")
+                    {
+                        failureReason = "Cannot brew: no cup detected.";
+                    }
+                    else
+                    {
+                        //Start brewing
+                        _brewingState = "brewing";
+                        _brewingTimer = BrewDurationSeconds;
+                    }
                 }
 
                 if (failureReason != null)
@@ -259,9 +298,6 @@ namespace Learn.CoffeeMaker
                     return Task.FromResult(new MethodResponse(failurePayload, (int)StatusCode.BadRequest));
                 }
 
-                //Start brewing
-                _brewingState = "brewing";
-                _brewingTimer = BrewDurationSeconds;
                 Console.WriteLine($" - Brewing started ({BrewDurationSeconds}s cycle).");
 
                 byte[] responsePayload = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject("Brewing started."));
@@ -282,10 +318,40 @@ namespace Learn.CoffeeMaker
         {
             const string propertyName = "OptimalTemperature";
 
-            (bool optimalTempUpdateReceived, double optimalTemp) = GetPropertyFromTwin<double>(desiredProperties, propertyName);
-            if (optimalTempUpdateReceived)
+            try
             {
+                bool optimalTempUpdateReceived;
+                double optimalTemp;
+                try
+                {
+                    (optimalTempUpdateReceived, optimalTemp) = GetPropertyFromTwin<double>(desiredProperties, propertyName);
+                }
+                catch (InvalidCastException)
+                {
+                    Console.WriteLine($" * Property: Received \"{propertyName}\" with an unexpected type - ignoring update.");
+                    return;
+                }
+
+                if (!optimalTempUpdateReceived)
+                {
+                    Console.WriteLine($" * Property: Received an unrecognized property update from service:\n{desiredProperties.ToJson()}");
+                    return;
+                }
+
                 Console.WriteLine($" * Property: Received - {{ \"{propertyName}\": {optimalTemp}°C }}.");
+
+                // Reject anything outside the range CoffeeMaker.json declares for this property.
+                if (optimalTemp < MinOptimalTemperature || optimalTemp > MaxOptimalTemperature)
+                {
+                    Console.WriteLine($" - Warning: {optimalTemp}°C is outside the valid range " +
+                        $"({MinOptimalTemperature}-{MaxOptimalTemperature}°C) - update rejected.");
+
+                    string jsonRejected = $"{{ \"{propertyName}\": {{ \"value\": {optimalTemp}, \"ac\": {(int)StatusCode.BadRequest}, " +
+                        $"\"av\": {desiredProperties.Version}, \"ad\": \"Rejected - must be between {MinOptimalTemperature} and {MaxOptimalTemperature} degreeCelsius\" }} }}";
+                    var reportedRejected = new TwinCollection(jsonRejected);
+                    await _deviceClient.UpdateReportedPropertiesAsync(reportedRejected);
+                    return;
+                }
 
                 //Update reported property to In Progress
                 string jsonPropertyPending = $"{{ \"{propertyName}\": {{ \"value\": {optimalTemp}, \"ac\": {(int)StatusCode.InProgress}, " +
@@ -295,7 +361,10 @@ namespace Learn.CoffeeMaker
                 Console.WriteLine($" * Property: Update - {{\"{propertyName} \": {optimalTemp}°C }} is {StatusCode.InProgress}.");
 
                 //Update the optimal temperature
-                _optimalTemperature = optimalTemp;
+                lock (_stateLock)
+                {
+                    _optimalTemperature = optimalTemp;
+                }
 
                 //Update reported property to Completed
                 string jsonProperty = $"{{ \"{propertyName}\": {{ \"value\": {optimalTemp}, \"ac\": {(int)StatusCode.Completed}, " +
@@ -304,9 +373,9 @@ namespace Learn.CoffeeMaker
                 await _deviceClient.UpdateReportedPropertiesAsync(reportedProperty);
                 Console.WriteLine($" * Property: Update - {{\"{propertyName} \": {optimalTemp}°C }} is {StatusCode.Completed}.");
             }
-            else
+            catch (Exception ex)
             {
-                Console.WriteLine($" * Property: Received an unrecognized property update from service:\n{desiredProperties.ToJson()}");
+                Console.WriteLine($"Exception while handling \"{propertyName}\" property update: {ex}");
             }
         }
 
@@ -319,6 +388,20 @@ namespace Learn.CoffeeMaker
 
             await _deviceClient.UpdateReportedPropertiesAsync(reportedProperties, cancellationToken);
             Console.WriteLine($" * Property: Update - {{ \"{propertyName}\": {_warrantyState} }} is {StatusCode.Completed}.");
+        }
+
+        // Reports the device's current OptimalTemperature back to IoT Central right away,
+        // so the Properties page shows a real value instead of "not reported" until an
+        // operator happens to push the first desired-property update.
+        private async Task ReportOptimalTemperatureAsync(double optimalTemperature, CancellationToken cancellationToken)
+        {
+            const string propertyName = "OptimalTemperature";
+
+            var reportedProperties = new TwinCollection();
+            reportedProperties[propertyName] = optimalTemperature;
+
+            await _deviceClient.UpdateReportedPropertiesAsync(reportedProperties, cancellationToken);
+            Console.WriteLine($" * Property: Update - {{ \"{propertyName}\": {optimalTemperature}°C }} is {StatusCode.Completed}.");
         }
         //</Properties>
 

@@ -33,6 +33,8 @@ namespace Learn.CoffeeMaker
             //Validate the environment variables
             if (!parameters.Validate())
             {
+                string missing = string.Join(", ", parameters.GetMissingEnvironmentVariables());
+                Console.WriteLine($"Missing required value(s): {missing}");
                 Console.WriteLine(CommandLine.Text.HelpText.AutoBuild(result, null, null));
                 Environment.Exit(1);
             }

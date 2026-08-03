@@ -2,6 +2,7 @@
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 using System;
+using System.Collections.Generic;
 using CommandLine;
 
 namespace Learn.CoffeeMaker
@@ -44,6 +45,15 @@ namespace Learn.CoffeeMaker
             return !string.IsNullOrWhiteSpace(IdScope)
                     && !string.IsNullOrWhiteSpace(DeviceId)
                     && !string.IsNullOrWhiteSpace(DevicePrimaryKey);
+        }
+
+        // Names the specific environment variables that are missing, so a validation
+        // failure can say exactly what to fix instead of just printing generic usage text.
+        public IEnumerable<string> GetMissingEnvironmentVariables()
+        {
+            if (string.IsNullOrWhiteSpace(IdScope)) yield return "ID_SCOPE";
+            if (string.IsNullOrWhiteSpace(DeviceId)) yield return "DEVICE_ID";
+            if (string.IsNullOrWhiteSpace(DevicePrimaryKey)) yield return "DEVICE_KEY";
         }
     }
 }
