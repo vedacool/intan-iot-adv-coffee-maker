@@ -60,7 +60,16 @@ namespace Learn.CoffeeMaker
                 await deviceClient.CloseAsync(CancellationToken.None);
             }
             catch (OperationCanceledException) { } // User canceled operation
-
+            catch (Exception ex)
+            {
+                Console.WriteLine();
+                Console.WriteLine("Failed to provision or connect the device.");
+                Console.WriteLine("Double-check that ID_SCOPE, DEVICE_ID, and DEVICE_KEY are all correct,");
+                Console.WriteLine("and that this device has actually been created under that template in IoT Central.");
+                Console.WriteLine();
+                Console.WriteLine($"Underlying error: {ex.Message}");
+                Environment.Exit(1);
+            }
         }
         
         //<Provisioning>

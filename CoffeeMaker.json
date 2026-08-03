@@ -20,8 +20,9 @@
                 "en": "Air Humidity"
             },
             "name": "AirHumidity",
-            "schema": "integer",
+            "schema": "double",
             "unit": "percent",
+            "decimalPlaces": 1,
             "maxValue": 100,
             "minValue": 20
         },
