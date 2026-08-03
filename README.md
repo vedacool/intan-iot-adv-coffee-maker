@@ -137,6 +137,32 @@ This lets you see live charts of the coffee maker's telemetry instead of just ra
    Telemetry send: Temperature: 96.4ºC Humidity: 23.3% Cup Detected: Y Brewing: N Maintenance Mode: N
    ```
 
+### Alternative: running from Windows PowerShell instead of Cloud Shell
+
+This project is built and verified against Azure Cloud Shell (see Scope, above). If you'd rather run it locally on Windows, the code itself doesn't change — only how you set environment variables differs, since PowerShell doesn't use `export`.
+
+1. Make sure the .NET SDK is installed locally: `dotnet --version`. If that fails, install it from https://dotnet.microsoft.com/download — the `.csproj`'s `RollForward=LatestMajor` means any 8.x-or-newer SDK will work, not just an exact 8.0 match.
+2. Clone this repo (requires Git for Windows):
+   ```powershell
+   git clone https://github.com/vedacool/intan-iot-adv-coffee-maker.git
+   cd intan-iot-adv-coffee-maker
+   ```
+3. Set your device credentials from Step 6 — in PowerShell this is `$env:NAME = "value"`, not `export`:
+   ```powershell
+   $env:ID_SCOPE = "<your ID scope>"
+   $env:DEVICE_ID = "<your Device ID>"
+   $env:DEVICE_KEY = "<your Primary key>"
+   ```
+   Note: `$env:` variables set this way only last for the current PowerShell window. If you want them to persist across new windows, use `setx` instead (e.g. `setx ID_SCOPE "<your ID scope>"`) — but `setx` only takes effect in windows opened *after* you run it, not the current one.
+4. Restore, build, and run — same commands as Cloud Shell:
+   ```powershell
+   dotnet restore
+   dotnet build
+   dotnet run
+   ```
+
+This should behave identically to Cloud Shell since it's the same .NET code with no OS-specific paths, but it hasn't been explicitly verified end-to-end on Windows. If you hit something here that didn't happen in Cloud Shell, it's worth updating the Scope section above with what you find.
+
 ## Step 8 — Watch it live in IoT Central
 
 1. Back in your IoT Central app, go to **Devices** and open your coffee machine device.
